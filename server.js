@@ -13,17 +13,17 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: ["http://localhost:5173"], // your frontend origin
+    methods: ["GET", "POST"],
   },
 });
 
-// store ICE candidates temporarily
+// Map of userId -> socketId
 const userSocketMap = new Map();
 
 io.on("connection", (socket) => {
   console.log("🔗 Client connected:", socket.id);
 
-  // assign userId from frontend
   const { userId } = socket.handshake.auth || {};
   if (userId) userSocketMap.set(userId, socket.id);
 
@@ -37,18 +37,17 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("newAnswer", async (offerObj, callback) => {
+  socket.on("newAnswer", (offerObj, callback) => {
     const offererSocketId = userSocketMap.get(offerObj.offererUserId);
     if (offererSocketId) {
       io.to(offererSocketId).emit("answerResponse", offerObj);
     }
-    // Return ICE candidates for handshake completion (optional)
-    callback([]);
+    if (callback) callback([]); // prevent crash if callback not provided
   });
 
   socket.on("sendIceCandidateToSignalingServer", (data) => {
     const targetSocketId = userSocketMap.get(
-      data.didIOffer.current ? data.iceUserId : data.iceUserId
+      data.didIOffer ? data.sendToUserId : data.iceUserId
     );
     if (targetSocketId) {
       io.to(targetSocketId).emit(
