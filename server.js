@@ -1,30 +1,82 @@
 import express from "express";
 import cors from "cors";
-import { WebSocketServer } from "ws";
+import http from "http";
+import { Server } from "socket.io";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get("/", (_, res) => res.send("✅ Signaling Server Running"));
+app.get("/", (_, res) => res.send("✅ Socket.IO Signaling Server Running"));
 
-const server = app.listen(process.env.PORT || 5000, () => {
-  console.log(`Signaling server on port ${process.env.PORT || 5000}`);
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+  },
 });
 
-const wss = new WebSocketServer({ server });
+// store ICE candidates temporarily
+const userSocketMap = new Map();
 
-wss.on("connection", (ws) => {
-  console.log("🔗 Client connected");
+io.on("connection", (socket) => {
+  console.log("🔗 Client connected:", socket.id);
 
-  ws.on("message", (message) => {
-    // broadcast to all other clients
-    wss.clients.forEach((client) => {
-      if (client !== ws && client.readyState === 1) {
-        client.send(message.toString());
-      }
-    });
+  // assign userId from frontend
+  const { userId } = socket.handshake.auth || {};
+  if (userId) userSocketMap.set(userId, socket.id);
+
+  socket.on("newOffer", ({ newOffer, sendToUserId }) => {
+    const receiverSocketId = userSocketMap.get(sendToUserId);
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("newOfferAwaiting", {
+        offer: newOffer,
+        offererUserId: userId,
+      });
+    }
   });
 
-  ws.on("close", () => console.log("❌ Client disconnected"));
+  socket.on("newAnswer", async (offerObj, callback) => {
+    const offererSocketId = userSocketMap.get(offerObj.offererUserId);
+    if (offererSocketId) {
+      io.to(offererSocketId).emit("answerResponse", offerObj);
+    }
+    // Return ICE candidates for handshake completion (optional)
+    callback([]);
+  });
+
+  socket.on("sendIceCandidateToSignalingServer", (data) => {
+    const targetSocketId = userSocketMap.get(
+      data.didIOffer.current ? data.iceUserId : data.iceUserId
+    );
+    if (targetSocketId) {
+      io.to(targetSocketId).emit(
+        "receivedIceCandidateFromServer",
+        data.iceCandidate
+      );
+    }
+  });
+
+  socket.on("hangupCall", (targetUserId) => {
+    const targetSocketId = userSocketMap.get(targetUserId);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("hangupCallReq", true);
+    }
+  });
+
+  socket.on("disconnect", () => {
+    console.log("❌ Client disconnected:", socket.id);
+    for (const [uid, sid] of userSocketMap.entries()) {
+      if (sid === socket.id) {
+        userSocketMap.delete(uid);
+        break;
+      }
+    }
+  });
 });
+
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () =>
+  console.log(`✅ Socket.IO signaling server running on port ${PORT}`)
+);
